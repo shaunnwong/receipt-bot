@@ -12,6 +12,8 @@ from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 
+print("ENV KEYS:", [k for k in os.environ.keys() if not k.startswith("PATH")])
+
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
