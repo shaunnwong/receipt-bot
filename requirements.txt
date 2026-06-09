@@ -1,4 +1,5 @@
 flask
 requests
 anthropic
-openpyxl
+gspread
+google-auth

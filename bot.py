@@ -5,18 +5,37 @@ import re
 from datetime import datetime, timezone
 
 import anthropic
-import openpyxl
+import gspread
 import requests
 from flask import Flask, request, jsonify
+from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-EXCEL_PATH = os.environ.get("EXCEL_PATH", os.path.expanduser("~/Desktop/Book1.xlsx"))
+SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME = "2026 HUAT"
 
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+
+def get_gsheet():
+    creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+    creds_file = os.environ.get("GOOGLE_CREDS_FILE")
+    if creds_json:
+        info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+
 
 RECEIPT_PROMPT = """Analyze this image and determine what type it is, then extract the relevant fields as JSON.
 
@@ -79,64 +98,55 @@ def analyze_image(image_bytes: bytes) -> dict:
     return json.loads(match.group()) if match else json.loads(text)
 
 
-def get_excel_row(date_str: str) -> int | None:
+def get_sheet_row(ws, date_str: str) -> int | None:
     try:
-        photo_date = datetime.strptime(date_str, "%d/%m/%Y").date()
-        wb = openpyxl.load_workbook(EXCEL_PATH, read_only=True, data_only=True)
-        ws = wb[SHEET_NAME]
-        for row in range(1, 500):
-            val = ws.cell(row=row, column=1).value
-            if val is None:
-                continue
-            if isinstance(val, datetime) and val.date() == photo_date:
-                wb.close()
-                return row
-        wb.close()
+        datetime.strptime(date_str, "%d/%m/%Y")
+        col_a = ws.col_values(1)
+        for i, val in enumerate(col_a):
+            if val == date_str:
+                return i + 1
         return None
     except (ValueError, TypeError):
         return None
 
 
-def update_excel(row: int, data: dict) -> str:
-    wb = openpyxl.load_workbook(EXCEL_PATH, keep_links=False)
-    ws = wb[SHEET_NAME]
+def update_sheet(ws, row: int, data: dict) -> str:
     img_type = data.get("type")
     updates = []
 
     if img_type == "receipt":
         if data.get("cash") is not None:
-            ws.cell(row=row, column=4).value = data["cash"]
+            ws.update_acell(f"D{row}", data["cash"])
             updates.append(f"Cash: {data['cash']}")
         if data.get("paynow") is not None:
-            ws.cell(row=row, column=7).value = data["paynow"]
+            ws.update_acell(f"G{row}", data["paynow"])
             updates.append(f"PayNow: {data['paynow']}")
         if data.get("mall_voucher") is not None:
-            ws.cell(row=row, column=9).value = data["mall_voucher"]
+            ws.update_acell(f"I{row}", data["mall_voucher"])
             updates.append(f"Mall Voucher: {data['mall_voucher']}")
         if data.get("qr") is not None:
-            ws.cell(row=row, column=11).value = data["qr"]
+            ws.update_acell(f"K{row}", data["qr"])
             updates.append(f"QR: {data['qr']}")
 
     elif img_type == "delivery":
         if data.get("foodpanda_sales") is not None:
-            ws.cell(row=row, column=14).value = data["foodpanda_sales"]
+            ws.update_acell(f"N{row}", data["foodpanda_sales"])
             updates.append(f"Foodpanda Sales: {data['foodpanda_sales']}")
         if data.get("grab_sales") is not None:
-            ws.cell(row=row, column=16).value = data["grab_sales"]
+            ws.update_acell(f"P{row}", data["grab_sales"])
             updates.append(f"Grab Sales: {data['grab_sales']}")
 
     elif img_type == "deposit":
         if data.get("tran_amount") is not None:
-            ws.cell(row=row, column=26).value = data["tran_amount"]
+            ws.update_acell(f"Z{row}", data["tran_amount"])
             updates.append(f"Bank In: {data['tran_amount']}")
 
-    wb.save(EXCEL_PATH)
     return "\n".join(updates)
 
 
-def format_reply(data: dict, excel_row: int, date_str: str, update_summary: str) -> str:
+def format_reply(data: dict, sheet_row: int, date_str: str, update_summary: str) -> str:
     img_type = data.get("type")
-    row_info = f" (row {excel_row})" if excel_row is not None else " (could not determine row)"
+    row_info = f" (row {sheet_row})" if sheet_row is not None else " (date not found in sheet)"
     lines = [f"Date: {date_str}{row_info}"]
 
     if img_type == "receipt":
@@ -159,12 +169,12 @@ def format_reply(data: dict, excel_row: int, date_str: str, update_summary: str)
             lines.append(f"Account: MISMATCH - found {data.get('account_found', 'unknown')}")
         lines.append(f"Tran Amount: {data.get('tran_amount', 'N/A')}")
 
-    if excel_row is None:
-        lines.append("\nCould not write to Excel: date not found on image.")
+    if sheet_row is None:
+        lines.append("\nCould not write to sheet: date not found.")
     elif update_summary:
-        lines.append(f"\nUpdated Excel:\n{update_summary}")
+        lines.append(f"\nUpdated Google Sheet:\n{update_summary}")
     else:
-        lines.append("\nNo values written to Excel.")
+        lines.append("\nNo values written to sheet.")
 
     return "\n".join(lines)
 
@@ -179,6 +189,7 @@ def webhook():
         best = photos[-1]
         file_id = best["file_id"]
         chat_id = message["chat"]["id"]
+
         requests.post(f"{TELEGRAM_API}/sendMessage", json={
             "chat_id": chat_id,
             "text": "Reading your image...",
@@ -188,15 +199,17 @@ def webhook():
         data = analyze_image(image_bytes)
 
         image_date = data.get("date")
-        excel_row = get_excel_row(image_date) if image_date else None
         date_str = image_date or "date not found on image"
 
-        if excel_row is not None:
-            update_summary = update_excel(excel_row, data)
+        ws = get_gsheet()
+        sheet_row = get_sheet_row(ws, image_date) if image_date else None
+
+        if sheet_row is not None:
+            update_summary = update_sheet(ws, sheet_row, data)
         else:
             update_summary = None
 
-        reply = format_reply(data, excel_row, date_str, update_summary)
+        reply = format_reply(data, sheet_row, date_str, update_summary)
 
         requests.post(f"{TELEGRAM_API}/sendMessage", json={
             "chat_id": chat_id,
