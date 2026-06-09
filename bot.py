@@ -102,10 +102,13 @@ def analyze_image(image_bytes: bytes) -> dict:
 
 def get_sheet_row(ws, date_str: str) -> int | None:
     try:
-        datetime.strptime(date_str, "%d/%m/%Y")
+        # Parse the date Claude extracted (DD/MM/YYYY)
+        parsed = datetime.strptime(date_str, "%d/%m/%Y")
+        # Convert to D/M/YY to match the sheet format
+        sheet_date = f"{parsed.day}/{parsed.month}/{str(parsed.year)[2:]}"
         col_a = ws.col_values(1)
         for i, val in enumerate(col_a):
-            if val == date_str:
+            if val == sheet_date:
                 return i + 1
         return None
     except (ValueError, TypeError):
