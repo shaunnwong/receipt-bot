@@ -100,16 +100,28 @@ def analyze_image(image_bytes: bytes) -> dict:
     return json.loads(match.group()) if match else json.loads(text)
 
 
+def parse_any_date(s: str):
+    """Try multiple date formats and return a date object, or None."""
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%-d/%-m/%Y", "%-d/%-m/%y",
+                "%d-%m-%Y", "%d-%m-%y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def get_sheet_row(ws, date_str: str) -> int | None:
     try:
-        # Parse the date Claude extracted (DD/MM/YYYY)
-        parsed = datetime.strptime(date_str, "%d/%m/%Y")
-        # Convert to D/M/YY to match the sheet format
-        sheet_date = f"{parsed.day}/{parsed.month}/{str(parsed.year)[2:]}"
+        target = parse_any_date(date_str)
+        if target is None:
+            return None
         col_a = ws.col_values(1)
         for i, val in enumerate(col_a):
-            if val == sheet_date:
-                return i + 1
+            if val:
+                sheet_date = parse_any_date(val)
+                if sheet_date and sheet_date == target:
+                    return i + 1
         return None
     except (ValueError, TypeError):
         return None
