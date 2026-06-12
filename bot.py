@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 
 import anthropic
@@ -26,6 +27,8 @@ SCOPES = [
 
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+ACCOUNTING_FORMAT = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+
 
 def get_gsheet():
     creds_json = os.environ.get("GOOGLE_CREDS_JSON")
@@ -39,21 +42,35 @@ def get_gsheet():
     return gc.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
 
 
-RECEIPT_PROMPT = """Analyze this image and determine what type it is, then extract the relevant fields as JSON.
+RECEIPT_PROMPT = """Analyze this image carefully. It may contain one or more of the following: a paper receipt, a device/screen showing delivery figures, and/or a cash deposit slip. Extract ALL items present — do not skip any.
 
-Also extract the date shown on the image itself (not today's date). Return it as "date" in DD/MM/YYYY format. If no date is visible, return null for date.
+Also extract the date shown on each item (not today's date). Return it as "date" in DD/MM/YYYY format. The date may appear as "End of Day DD-MM-YYYY" on the receipt, or "DDJUN/YYYY" on the deposit slip.
 
-If this is a RECEIPT (paper receipt):
-Return: {"type": "receipt", "date": "DD/MM/YYYY or null", "cash": <number or null>, "paynow": <number or null>, "mall_voucher": <number or null>, "qr": <number or null>}
+Return a JSON array containing one object per item found. Each object should be one of:
 
-If this is a DEVICE/SCREEN showing delivery figures:
-Return: {"type": "delivery", "date": "DD/MM/YYYY or null", "grab_sales": <number or null>, "foodpanda_sales": <number or null>}
+Receipt object (look for "End of Day" receipt from Mei Heong Yuen Dessert):
+{"type": "receipt", "date": "DD/MM/YYYY or null", "cash": <number or null>, "paynow": <number or null>, "paynow_qr": <number or null>, "mall_voucher": <number or null>}
 
-If this is a CASH DEPOSIT SLIP:
-Check if account number is 3493354335 (UOB).
-Return: {"type": "deposit", "date": "DD/MM/YYYY or null", "account_match": <true or false>, "account_found": "<account number on slip>", "tran_amount": <number or null>}
+Field mapping for this receipt format — use the CASHIER DECLARED section values only:
+- "cash": the dollar amount on the same line as "CASH [xx]"
+- "paynow": the dollar amount on the same line as "Paynow [xx]" — this is a SEPARATE line from PayNow QR. If it shows $0.00, return 0.
+- "paynow_qr": the dollar amount on the same line as "PayNow QR [xx]" — this is DIFFERENT from Paynow. Do NOT copy the paynow_qr value into paynow.
+- "mall_voucher": the dollar amount on the same line as "Mall Voucher [xx]"
 
-Return ONLY the JSON object, nothing else."""
+IMPORTANT: "Paynow" and "PayNow QR" are two completely different fields on two different lines. Read each line independently.
+
+Delivery screen object:
+{"type": "delivery", "date": "DD/MM/YYYY or null", "grab_sales": <number or null>, "foodpanda_sales": <number or null>}
+
+Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION RECORD slip — it may be small, placed beside the receipt, partially overlapping, or in a corner):
+{"type": "deposit", "date": "DD/MM/YYYY or null", "account_match": <true or false>, "account_found": "<account number on slip>", "tran_amount": <number or null>}
+- Look for the UOB logo (three red bars) or text "ATM TRANSACTION RECORD" or "UOB" anywhere in the image
+- "account_found": the ACCOUNT NO value on the slip
+- Check if ACCOUNT NO is 3493354335 (UOB). Set account_match true if it matches.
+- "tran_amount": the TRAN AMOUNT value (e.g. $650.00 → 650.0)
+- "date": look for the DATE field on the slip (e.g. "11JUN2026" → "11/06/2026")
+
+Return ONLY the JSON array, nothing else. Example for two items: [{"type": "receipt", ...}, {"type": "deposit", ...}]"""
 
 
 def set_webhook(webhook_url: str):
@@ -72,11 +89,11 @@ def download_file(file_id: str) -> bytes:
     return file_resp.content
 
 
-def analyze_image(image_bytes: bytes) -> dict:
+def analyze_image(image_bytes: bytes) -> list:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     response = claude.messages.create(
         model="claude-opus-4-8",
-        max_tokens=512,
+        max_tokens=1024,
         thinking={"type": "adaptive"},
         messages=[
             {
@@ -96,12 +113,12 @@ def analyze_image(image_bytes: bytes) -> dict:
         ],
     )
     text = response.content[-1].text.strip()
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    return json.loads(match.group()) if match else json.loads(text)
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    result = json.loads(match.group()) if match else json.loads(text)
+    return result if isinstance(result, list) else [result]
 
 
 def parse_any_date(s: str):
-    """Try multiple date formats and return a date object, or None."""
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%-d/%-m/%Y", "%-d/%-m/%y",
                 "%d-%m-%Y", "%d-%m-%y", "%Y-%m-%d"):
         try:
@@ -127,35 +144,39 @@ def get_sheet_row(ws, date_str: str) -> int | None:
         return None
 
 
+def write_cell(ws, cell: str, value):
+    ws.update_acell(cell, round(float(value), 2))
+
+
 def update_sheet(ws, row: int, data: dict) -> str:
     img_type = data.get("type")
     updates = []
 
     if img_type == "receipt":
         if data.get("cash") is not None:
-            ws.update_acell(f"D{row}", data["cash"])
+            write_cell(ws, f"D{row}", data["cash"])
             updates.append(f"Cash: {data['cash']}")
         if data.get("paynow") is not None:
-            ws.update_acell(f"G{row}", data["paynow"])
+            write_cell(ws, f"G{row}", data["paynow"])
             updates.append(f"PayNow: {data['paynow']}")
+        if data.get("paynow_qr") is not None:
+            write_cell(ws, f"K{row}", data["paynow_qr"])
+            updates.append(f"PayNow QR: {data['paynow_qr']}")
         if data.get("mall_voucher") is not None:
-            ws.update_acell(f"I{row}", data["mall_voucher"])
+            write_cell(ws, f"I{row}", data["mall_voucher"])
             updates.append(f"Mall Voucher: {data['mall_voucher']}")
-        if data.get("qr") is not None:
-            ws.update_acell(f"K{row}", data["qr"])
-            updates.append(f"QR: {data['qr']}")
 
     elif img_type == "delivery":
         if data.get("foodpanda_sales") is not None:
-            ws.update_acell(f"N{row}", data["foodpanda_sales"])
+            write_cell(ws, f"N{row}", data["foodpanda_sales"])
             updates.append(f"Foodpanda Sales: {data['foodpanda_sales']}")
         if data.get("grab_sales") is not None:
-            ws.update_acell(f"P{row}", data["grab_sales"])
+            write_cell(ws, f"P{row}", data["grab_sales"])
             updates.append(f"Grab Sales: {data['grab_sales']}")
 
     elif img_type == "deposit":
         if data.get("tran_amount") is not None:
-            ws.update_acell(f"Z{row}", data["tran_amount"])
+            write_cell(ws, f"Z{row}", data["tran_amount"])
             updates.append(f"Bank In: {data['tran_amount']}")
 
     return "\n".join(updates)
@@ -170,8 +191,8 @@ def format_reply(data: dict, sheet_row: int, date_str: str, update_summary: str)
         lines.append("Type: Receipt")
         lines.append(f"Cash: {data.get('cash', 'N/A')}")
         lines.append(f"PayNow: {data.get('paynow', 'N/A')}")
+        lines.append(f"PayNow QR: {data.get('paynow_qr', 'N/A')}")
         lines.append(f"Mall Voucher: {data.get('mall_voucher', 'N/A')}")
-        lines.append(f"QR: {data.get('qr', 'N/A')}")
 
     elif img_type == "delivery":
         lines.append("Type: Delivery Screen")
@@ -196,6 +217,35 @@ def format_reply(data: dict, sheet_row: int, date_str: str, update_summary: str)
     return "\n".join(lines)
 
 
+def process_image(chat_id: str, file_id: str):
+    try:
+        image_bytes = download_file(file_id)
+        items = analyze_image(image_bytes)
+        ws = get_gsheet()
+
+        for data in items:
+            image_date = data.get("date")
+            date_str = image_date or "date not found on image"
+            sheet_row = get_sheet_row(ws, image_date) if image_date else None
+
+            if sheet_row is not None:
+                update_summary = update_sheet(ws, sheet_row, data)
+            else:
+                update_summary = None
+
+            reply = format_reply(data, sheet_row, date_str, update_summary)
+            requests.post(f"{TELEGRAM_API}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": reply,
+            })
+
+    except Exception as e:
+        requests.post(f"{TELEGRAM_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"Error processing image: {str(e)}",
+        })
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json()
@@ -212,26 +262,8 @@ def webhook():
             "text": "Reading your image...",
         })
 
-        image_bytes = download_file(file_id)
-        data = analyze_image(image_bytes)
-
-        image_date = data.get("date")
-        date_str = image_date or "date not found on image"
-
-        ws = get_gsheet()
-        sheet_row = get_sheet_row(ws, image_date) if image_date else None
-
-        if sheet_row is not None:
-            update_summary = update_sheet(ws, sheet_row, data)
-        else:
-            update_summary = None
-
-        reply = format_reply(data, sheet_row, date_str, update_summary)
-
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply,
-        })
+        # Process in background so webhook returns 200 immediately
+        threading.Thread(target=process_image, args=(chat_id, file_id), daemon=True).start()
 
     return jsonify({"ok": True})
 
