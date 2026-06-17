@@ -59,8 +59,12 @@ Field mapping for this receipt format — use the CASHIER DECLARED section value
 
 IMPORTANT: "Paynow" and "PayNow QR" are two completely different fields on two different lines. Read each line independently.
 
-Delivery screen object:
+Delivery screen object (a photo showing two devices — Grab app on one device and Foodpanda app on another):
 {"type": "delivery", "date": "DD/MM/YYYY or null", "grab_sales": <number or null>, "foodpanda_sales": <number or null>}
+- "date": look for the date in the Grab app (e.g. "Today, 16 Jun 2026" → "16/06/2026"). Use this date for the whole object even if Foodpanda has no date.
+- "grab_sales": the Net Sales (S$) figure shown in the Grab app
+- "foodpanda_sales": the total SGD amount shown under Recent Orders in the Foodpanda app (e.g. "All 2 · SGD49.20" → 49.20)
+Return this as a single object, not two separate objects.
 
 Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION RECORD slip — it may be small, placed beside the receipt, partially overlapping, or in a corner):
 {"type": "deposit", "date": "DD/MM/YYYY or null", "account_match": <true or false>, "account_found": "<account number on slip>", "tran_amount": <number or null>}
