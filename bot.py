@@ -74,7 +74,7 @@ Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION R
 - "account_found": the ACCOUNT NO value on the slip
 - Check if ACCOUNT NO is 3493354335 (UOB). Set account_match true if it matches.
 - "tran_amount": the total deposited amount. On the slip there are two sections: a LEFT side showing a denomination breakdown table (e.g. rows of $50, $10 bills — IGNORE this entire table) and a RIGHT side showing summary fields. Read the "DEPOSIT" or "TRAN AMOUNT" field value from the RIGHT summary section only (e.g. $550.00 → 550.0). This will be the largest dollar figure on the slip and will match the TOTAL shown in the denomination table.
-- "date": look for the DATE field on the slip (e.g. "11JUN2026" → "11/06/2026"). All slips are from year 2026 — if you read a year like 2016 or 2006 it is an OCR error, use 2026.
+- "date": look for the DATE field on the slip for the day and month (e.g. "22JUN2026" → "22/06/2026"). Always use 2026 as the year regardless of what the slip appears to show — year OCR on thermal slips is unreliable.
 
 Return ONLY the JSON array, nothing else. Example for two items: [{"type": "receipt", ...}, {"type": "deposit", ...}]"""
 
@@ -136,8 +136,8 @@ def analyze_image(image_bytes: bytes) -> list:
 
 def parse_any_date(s: str):
     s = s.strip()
-    # Correct common OCR year misread: 2016 → 2026
-    s = s.replace('2016', '2026')
+    # Normalize any 4-digit year to 2026 (thermal slip OCR is unreliable for year)
+    s = re.sub(r'\b20\d\d\b', '2026', s)
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%-d/%-m/%Y", "%-d/%-m/%y",
                 "%d-%m-%Y", "%d-%m-%y", "%Y-%m-%d"):
         try:
