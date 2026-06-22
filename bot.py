@@ -51,13 +51,14 @@ Return a JSON array containing one object per item found. Each object should be 
 Receipt object (look for "End of Day" receipt from Mei Heong Yuen Dessert):
 {"type": "receipt", "date": "DD/MM/YYYY or null", "cash": <number or null>, "paynow": <number or null>, "paynow_qr": <number or null>, "mall_voucher": <number or null>}
 
-Field mapping for this receipt format — use the CASHIER DECLARED section values only:
-- "cash": the dollar amount on the same line as "CASH [xx]"
-- "paynow": the dollar amount on the same line as "Paynow [xx]" — this is a SEPARATE line from PayNow QR. If it shows $0.00, return 0.
+Field mapping for this receipt format — use values from the FIRST "Payment Modes" block only. This block appears under the "*** Total Sales (Declaration) ***" / "Cashier Declared" header. IGNORE the second "Payment Modes (System Calcuated)" block entirely.
+
+- "cash": the dollar amount on the same line as "CASH [xx]" in the first Payment Modes block. This will often be a large number like $770.10. Do NOT return 0 if you can see a non-zero amount.
+- "paynow": the dollar amount on the same line as "Paynow [xx]" — this is a SEPARATE line from PayNow QR. If it genuinely shows $0.00, return 0.
 - "paynow_qr": the dollar amount on the same line as "PayNow QR [xx]" — this is DIFFERENT from Paynow. Do NOT copy the paynow_qr value into paynow.
 - "mall_voucher": the dollar amount on the same line as "Mall Voucher [xx]"
 
-IMPORTANT: "Paynow" and "PayNow QR" are two completely different fields on two different lines. Read each line independently.
+IMPORTANT: "Paynow" and "PayNow QR" are two completely different fields on two different lines. Read each line independently. Always read from the first Payment Modes block (Cashier Declared), never the System Calcuated block.
 
 Delivery screen object (a photo showing two devices — Grab app on one device and Foodpanda app on another):
 {"type": "delivery", "date": "DD/MM/YYYY or null", "grab_sales": <number or null>, "foodpanda_sales": <number or null>}
