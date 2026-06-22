@@ -73,7 +73,7 @@ Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION R
 - Look for the UOB logo (three red bars) or text "ATM TRANSACTION RECORD" or "UOB" anywhere in the image
 - "account_found": the ACCOUNT NO value on the slip
 - Check if ACCOUNT NO is 3493354335 (UOB). Set account_match true if it matches.
-- "tran_amount": the total deposited amount — look for a field labelled "TRAN AMOUNT" or "DEPOSIT" (whichever is present on the slip). Use the single large summary figure (e.g. $550.00 → 550.0), NOT individual denomination line items.
+- "tran_amount": the total deposited amount. On the slip there are two sections: a LEFT side showing a denomination breakdown table (e.g. rows of $50, $10 bills — IGNORE this entire table) and a RIGHT side showing summary fields. Read the "DEPOSIT" or "TRAN AMOUNT" field value from the RIGHT summary section only (e.g. $550.00 → 550.0). This will be the largest dollar figure on the slip and will match the TOTAL shown in the denomination table.
 - "date": look for the DATE field on the slip (e.g. "11JUN2026" → "11/06/2026")
 
 Return ONLY the JSON array, nothing else. Example for two items: [{"type": "receipt", ...}, {"type": "deposit", ...}]"""
