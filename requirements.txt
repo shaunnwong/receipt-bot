@@ -3,3 +3,4 @@ requests
 anthropic
 gspread
 google-auth
+Pillow

@@ -1,10 +1,13 @@
 import base64
+import io
 import json
 import os
 import re
 import threading
 import time
 from datetime import datetime, timezone
+
+from PIL import Image, ImageOps
 
 import anthropic
 import gspread
@@ -93,6 +96,14 @@ def download_file(file_id: str) -> bytes:
     file_resp = requests.get(download_url)
     file_resp.raise_for_status()
     return file_resp.content
+
+
+def correct_orientation(image_bytes: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)  # rotate based on EXIF orientation tag
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return buf.getvalue()
 
 
 def analyze_image(image_bytes: bytes) -> list:
@@ -236,7 +247,7 @@ def format_reply(data: dict, sheet_row: int, date_str: str, update_summary: str)
 
 def process_image(chat_id: str, file_id: str):
     try:
-        image_bytes = download_file(file_id)
+        image_bytes = correct_orientation(download_file(file_id))
         items = analyze_image(image_bytes)
         ws = get_gsheet()
 
