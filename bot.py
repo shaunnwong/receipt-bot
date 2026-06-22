@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 import anthropic
@@ -96,31 +97,41 @@ def download_file(file_id: str) -> bytes:
 
 def analyze_image(image_bytes: bytes) -> list:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-    response = claude.messages.create(
-        model="claude-opus-4-8",
-        max_tokens=1024,
-        thinking={"type": "adaptive"},
-        messages=[
-            {
-                "role": "user",
-                "content": [
+    last_err = None
+    for attempt in range(4):
+        if attempt > 0:
+            time.sleep(2 ** attempt)  # 2s, 4s, 8s
+        try:
+            response = claude.messages.create(
+                model="claude-opus-4-8",
+                max_tokens=1024,
+                thinking={"type": "adaptive"},
+                messages=[
                     {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": RECEIPT_PROMPT},
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": image_b64,
+                                },
+                            },
+                            {"type": "text", "text": RECEIPT_PROMPT},
+                        ],
+                    }
                 ],
-            }
-        ],
-    )
-    text = response.content[-1].text.strip()
-    match = re.search(r'\[.*\]', text, re.DOTALL)
-    result = json.loads(match.group()) if match else json.loads(text)
-    return result if isinstance(result, list) else [result]
+            )
+            text = response.content[-1].text.strip()
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            result = json.loads(match.group()) if match else json.loads(text)
+            return result if isinstance(result, list) else [result]
+        except Exception as e:
+            last_err = e
+            if "overloaded" not in str(e).lower():
+                raise
+    raise last_err
 
 
 def parse_any_date(s: str):
