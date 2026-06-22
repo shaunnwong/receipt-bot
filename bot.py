@@ -1,13 +1,10 @@
 import base64
-import io
 import json
 import os
 import re
 import threading
 import time
 from datetime import datetime, timezone
-
-from PIL import Image, ImageOps
 
 import anthropic
 import gspread
@@ -71,13 +68,14 @@ Delivery screen object (a photo showing two devices — Grab app on one device a
 - "foodpanda_sales": the total SGD amount shown under Recent Orders in the Foodpanda app (e.g. "All 2 · SGD49.20" → 49.20)
 Return this as a single object, not two separate objects.
 
-Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION RECORD slip — it may be small, placed beside the receipt, partially overlapping, or in a corner):
+Cash deposit slip object (look anywhere in the image for a UOB ATM TRANSACTION RECORD slip — it may be small, placed beside the receipt, partially overlapping, in a corner, or rotated sideways):
 {"type": "deposit", "date": "DD/MM/YYYY or null", "account_match": <true or false>, "account_found": "<account number on slip>", "tran_amount": <number or null>}
-- Look for the UOB logo (three red bars) or text "ATM TRANSACTION RECORD" or "UOB" anywhere in the image
-- "account_found": the ACCOUNT NO value on the slip
+- Look for the UOB logo (three red bars) or text "ATM TRANSACTION RECORD" or "UOB" anywhere in the image — the slip may be rotated 90 degrees, read it sideways if needed
+- The slip has two sections: a denomination breakdown table (rows showing $2/$5/$10/$50/$1000 bill counts) and a summary section with labelled fields (DATE, ACCOUNT NO, TRAN TYPE, TRAN AMOUNT, BALANCE).
+- "account_found": the ACCOUNT NO value in the summary section
 - Check if ACCOUNT NO is 3493354335 (UOB). Set account_match true if it matches.
-- "tran_amount": the total deposited amount. On the slip there are two sections: a LEFT side showing a denomination breakdown table (e.g. rows of $50, $10 bills — IGNORE this entire table) and a RIGHT side showing summary fields. Read the "DEPOSIT" or "TRAN AMOUNT" field value from the RIGHT summary section only (e.g. $550.00 → 550.0). This will be the largest dollar figure on the slip and will match the TOTAL shown in the denomination table.
-- "date": look for the DATE field on the slip for the day and month (e.g. "22JUN2026" → "22/06/2026"). The year on thermal slips is often misread by OCR — do not worry about it, the system will correct the year automatically.
+- "tran_amount": find the label "TRAN AMOUNT" in the summary section and read the dollar value next to it (e.g. $550.00 → 550.0). This will match the TOTAL row of the denomination table. Do NOT read from individual denomination rows.
+- "date": find the DATE field in the summary section (e.g. "22JUN2026" → "22/06/2026")
 
 Return ONLY the JSON array, nothing else. Example for two items: [{"type": "receipt", ...}, {"type": "deposit", ...}]"""
 
@@ -96,14 +94,6 @@ def download_file(file_id: str) -> bytes:
     file_resp = requests.get(download_url)
     file_resp.raise_for_status()
     return file_resp.content
-
-
-def correct_orientation(image_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes))
-    img = ImageOps.exif_transpose(img)  # rotate based on EXIF orientation tag
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    return buf.getvalue()
 
 
 def analyze_image(image_bytes: bytes) -> list:
@@ -247,7 +237,7 @@ def format_reply(data: dict, sheet_row: int, date_str: str, update_summary: str)
 
 def process_image(chat_id: str, file_id: str):
     try:
-        image_bytes = correct_orientation(download_file(file_id))
+        image_bytes = download_file(file_id)
         items = analyze_image(image_bytes)
         ws = get_gsheet()
 
