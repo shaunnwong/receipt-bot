@@ -28,6 +28,10 @@ SCOPES = [
 
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+# Stores pending delivery items awaiting a manual date from the user
+# { chat_id: {"data": {...}, "ws": worksheet} }
+pending_date: dict = {}
+
 ACCOUNTING_FORMAT = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
 
 
@@ -243,6 +247,15 @@ def process_image(chat_id: str, file_id: str):
 
         for data in items:
             image_date = data.get("date")
+
+            if data.get("type") == "delivery" and not image_date:
+                pending_date[chat_id] = {"data": data, "ws": ws}
+                requests.post(f"{TELEGRAM_API}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Delivery screen detected but no date found.\nPlease reply with the date (e.g. 22/06/2026):",
+                })
+                continue
+
             date_str = image_date or "date not found on image"
             sheet_row = get_sheet_row(ws, image_date) if image_date else None
 
@@ -264,16 +277,40 @@ def process_image(chat_id: str, file_id: str):
         })
 
 
+def handle_manual_date(chat_id, text):
+    pending = pending_date.pop(chat_id, None)
+    if not pending:
+        return
+    data = pending["data"]
+    ws = pending["ws"]
+    date_str = text.strip()
+    sheet_row = get_sheet_row(ws, date_str)
+    if sheet_row is None:
+        requests.post(f"{TELEGRAM_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"Date {date_str} not found in sheet. Please try again (e.g. 22/06/2026):",
+        })
+        pending_date[chat_id] = pending  # put it back
+        return
+    update_summary = update_sheet(ws, sheet_row, data)
+    reply = format_reply(data, sheet_row, date_str, update_summary)
+    requests.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": reply,
+    })
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json()
     message = update.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
     photos = message.get("photo")
+    text = message.get("text", "").strip()
 
-    if photos:
+    if photos and chat_id:
         best = photos[-1]
         file_id = best["file_id"]
-        chat_id = message["chat"]["id"]
 
         requests.post(f"{TELEGRAM_API}/sendMessage", json={
             "chat_id": chat_id,
@@ -282,6 +319,9 @@ def webhook():
 
         # Process in background so webhook returns 200 immediately
         threading.Thread(target=process_image, args=(chat_id, file_id), daemon=True).start()
+
+    elif text and chat_id and chat_id in pending_date:
+        threading.Thread(target=handle_manual_date, args=(chat_id, text), daemon=True).start()
 
     return jsonify({"ok": True})
 
